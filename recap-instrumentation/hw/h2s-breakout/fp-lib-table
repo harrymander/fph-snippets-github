@@ -1,0 +1,4 @@
+(fp_lib_table
+  (lib (name "recap")(type "KiCad")(uri "${KIPRJMOD}/../lib/recap.pretty")(options "")(descr ""))
+  (lib (name "molex-kk-254-horizontal")(type "KiCad")(uri "${KIPRJMOD}/../lib/molex-kk-254-horizontal.pretty")(options "")(descr ""))
+)

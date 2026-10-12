@@ -1,0 +1,9 @@
+[submodule "sw/mmculib"]
+    path = sw/mmculib
+	url = git@github.com:harrymander/mmculib.git
+[submodule "sw/mat91lib"]
+    path = sw/mat91lib
+	url = git@github.com:harrymander/mat91lib.git
+[submodule "sw/freertos/FreeRTOS-Kernel"]
+	path = sw/freertos/FreeRTOS-Kernel
+	url = git@github.com:FreeRTOS/FreeRTOS-Kernel.git

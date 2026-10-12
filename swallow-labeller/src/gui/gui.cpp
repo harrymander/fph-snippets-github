@@ -1,0 +1,656 @@
+#include "gui/gui.hpp"
+
+#include "app/annotation-store.hpp"
+#include "app/task-loader.hpp"
+#include "gui/font.hpp"
+#include "gui/icons.h"
+#include "gui/options.hpp"
+#include "gui/task-list.hpp"
+#include "gui/task-view.hpp"
+#include "gui/widgets/color-scheme-selector.hpp"
+#include "gui/widgets/util.hpp"
+#include "gui/windows.hpp"
+#include "models/annotation.hpp"
+#include "models/task-info.hpp"
+#include "util/os.hpp"
+
+#include <fmt/std.h>
+#include <imgui.h>
+#include <implot.h>
+#include <nfd.hpp>
+#include <spdlog/spdlog.h>
+
+#include <array>
+#include <concepts>
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <string>
+#include <type_traits>
+
+namespace recap::labeller::gui {
+
+namespace {
+
+class WindowMenuItem {
+public:
+    using DrawFunction = void (*)(bool *);
+
+    WindowMenuItem(const char *name, DrawFunction draw_func, bool active = false) :
+        m_name(name), m_draw_func(draw_func), m_active(active)
+    {}
+
+    void draw_window()
+    {
+        if (m_active) {
+            m_draw_func(&m_active);
+        }
+    }
+
+    void draw_menu_item()
+    {
+        if (ImGui::MenuItem(m_name, nullptr, m_active)) {
+            m_active = !m_active;
+        }
+    }
+
+private:
+    const char *m_name;
+    DrawFunction m_draw_func;
+    bool m_active;
+};
+
+class ModalWindow {
+public:
+    // `draw()` is called inside BeginPopup/EndPopup. Return false to close the modal.
+    template <typename Draw>
+        requires std::same_as<std::invoke_result_t<Draw>, bool>
+    bool draw(const char *name, ImGuiWindowFlags flags, const Draw& draw)
+    {
+        constexpr ImVec2 CentrePos = {0.5F, 0.5F};
+
+        if (!m_opened) {
+            spdlog::debug("Opening modal {:?}", name);
+            m_opened = true;
+            ImGui::OpenPopup(name);
+            ImGui::SetNextWindowPos(
+                ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, CentrePos
+            );
+
+            // ConfigDebugBeginReturnValueOnce calls all Begin() functions to return false on first
+            // call. So just open and close here so that it actually returns true below.
+            if constexpr (ConfigDebugBeginReturnValueOnce) {
+                if (ImGui::BeginPopupModal(name, nullptr, flags)) {
+                    ImGui::EndPopup();
+                }
+            }
+        }
+
+        bool open = ImGui::BeginPopupModal(name, nullptr, flags);
+        if (open) {
+            open = draw();
+            if (!open) {
+                spdlog::debug("Closing modal {:?}", name);
+                ImGui::CloseCurrentPopup();
+                m_opened = false;
+            }
+            ImGui::EndPopup();
+        }
+
+        return open;
+    }
+
+    // Same as above with no flags
+    template <typename Draw> bool draw(const char *name, const Draw& draw)
+    {
+        return draw(name, 0, draw);
+    }
+
+private:
+    bool m_opened = false;
+};
+
+class UnsavedTaskHandler {
+public:
+    using Continue = std::function<void()>;
+    using Cancel = std::function<void()>;
+
+    void set(Continue continue_func, Cancel cancel_func, const TaskView *task_view)
+    {
+        if (m_actions.has_value()) {
+            // TODO
+            spdlog::warn("Unsaved task handler already has action, ignoring");
+        } else {
+            m_task_view = task_view;
+            m_actions.emplace(std::move(continue_func), std::move(cancel_func));
+        }
+    }
+
+    void draw()
+    {
+        if (!m_actions.has_value()) {
+            return;
+        }
+        bool status = m_modal.draw(
+            ERR_ICON ICON_TEXT_SPACE "Unsaved annotation",
+            ImGuiWindowFlags_AlwaysAutoResize,
+            [this]() { return draw_modal_contents(); }
+        );
+        if (!status) {
+            spdlog::debug("Unsaved annotation modal closed");
+            m_actions = std::nullopt;
+        }
+    }
+
+private:
+    bool draw_modal_contents()
+    {
+        static const char *const dont_save_str = "Discard changes"; // Longest string
+        const ImVec2 size = {
+            ImGui::CalcTextSize(dont_save_str).x + 2 * ImGui::GetStyle().ItemInnerSpacing.x,
+            0,
+        };
+
+        ImGui::Text("There are unsaved annotation changes!");
+        if (m_task_view && !m_task_view->can_save_annotation()) {
+            ImGui::TextWrapped(
+                "Annotation is in an invalid state. "
+                "To save, click \"Cancel\", fix errors, and save."
+            );
+        }
+
+        ImGui::Spacing();
+
+        {
+            widgets::RedButtonColorScope red_button;
+            if (ImGui::Button(dont_save_str, size)) {
+                spdlog::info("Discarding unsaved changes");
+                m_actions->continue_func();
+                return false;
+            }
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", size) || widgets::global_shortcut(ImGuiKey_Escape)) {
+            spdlog::info("Cancelling task close");
+            m_actions->cancel_func();
+            return false;
+        }
+
+        if (m_task_view && m_task_view->can_save_annotation()) {
+            ImGui::SameLine();
+            if (ImGui::Button("Save changes", size)) {
+                spdlog::info("Saving task changes");
+                m_task_view->save_annotation();
+                m_actions->continue_func();
+                return false;
+            }
+        }
+        ImGui::SetItemDefaultFocus();
+
+        return true;
+    }
+
+    struct Actions {
+        Continue continue_func;
+        Cancel cancel_func;
+    };
+
+    std::optional<Actions> m_actions = std::nullopt;
+    const TaskView *m_task_view = nullptr;
+    ModalWindow m_modal;
+};
+
+}; // namespace
+
+class Gui::Impl {
+    std::string m_ini_path;
+
+    bool m_first_draw = true;
+    bool m_nfd_available = false;
+    bool m_ready_to_stop = false;
+
+    std::array<WindowMenuItem, 3> m_menu_item_windows = {{
+        {"ImGui demo...", ImGui::ShowDemoWindow},
+        {"ImPlot demo...", ImPlot::ShowDemoWindow},
+        {"ImGui metrics/debugger...", ImGui::ShowMetricsWindow},
+    }};
+    widgets::ColorSchemeSelector m_color_scheme_selector;
+    bool m_show_debug_status_bar = DefaultShowDebugInfo;
+
+    std::optional<std::string> m_critical_error = std::nullopt;
+    ModalWindow m_critical_error_modal;
+    UnsavedTaskHandler m_unsaved_task_handler;
+
+    std::future<os::OsOpenStatus> m_open_annotations_path_future;
+
+    app::TaskLoader m_task_loader;
+    TaskList m_task_list;
+    std::size_t m_active_task_idx = 0;
+    std::unique_ptr<TaskView> m_task_view = nullptr;
+
+    const std::vector<models::SwallowTaskInfo>& m_tasks;
+    std::filesystem::path m_data_dir;
+    SwallowAnnotationStore& m_annotation_store;
+    SwallowAnnotationStore::ErrorObservable::Observer m_annotation_store_error_obs;
+
+    static bool is_valid_ini_path(const std::filesystem::path& path)
+    {
+        namespace fs = std::filesystem;
+        if (fs::is_directory(path)) {
+            spdlog::error("Invalid INI path: '{}' is a directory", path);
+            return false;
+        }
+
+        const auto parent = path.parent_path();
+        if (!parent.empty() && !fs::is_directory(parent)) {
+            spdlog::error(
+                "Invalid INI path: parent directory '{}' does not exist or is not a directory",
+                parent
+            );
+            return false;
+        }
+
+        return true;
+    }
+
+    void setup_imgui_ini()
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        const auto env = os::getenv("RECAP_LABELLER_IMGUI_INI_PATH");
+        if (env.has_value()) {
+            if (!env->empty()) {
+                std::filesystem::path path(*env);
+                if (is_valid_ini_path(path)) {
+                    m_ini_path = path.make_preferred().string();
+                    spdlog::info("Custom ImGui INI path: '{}'", m_ini_path);
+                    io.IniFilename = m_ini_path.c_str();
+                } else {
+                    spdlog::error("Using default ImGui INI path");
+                }
+            } else {
+                spdlog::info("RECAP_LABELLER_IMGUI_INI_PATH empty: disabling INI file");
+                io.IniFilename = nullptr;
+            }
+        } else {
+            spdlog::debug("RECAP_LABELLER_IMGUI_INI_PATH not set, using default ImGui INI path");
+        }
+    }
+
+    void draw_status_bar() const
+    {
+        constexpr float FramePadding = 5;
+        constexpr ImGuiWindowFlags WindowFlags = ImGuiWindowFlags_NoScrollbar
+            | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar;
+
+        widgets::ScopedImStyle style_scope = {
+            {ImGuiStyleVar_WindowBorderSize, 0.0F},
+            {ImGuiStyleVar_WindowPadding, ImVec2{ImGui::GetStyle().WindowPadding.x, 0}},
+            {ImGuiStyleVar_FramePadding, ImVec2{FramePadding, FramePadding}},
+        };
+        bool open = ImGui::BeginViewportSideBar(
+            "##viewport_status_bar",
+            ImGui::GetMainViewport(),
+            ImGuiDir_Down,
+            ImGui::GetFrameHeight(),
+            WindowFlags
+        );
+        if (open) {
+            ImGui::AlignTextToFramePadding();
+            const ImGuiIO& io = ImGui::GetIO();
+            ImGui::Text(
+                DEBUG_INFO_ICON ICON_TEXT_SPACE
+                "Mouse Position: [%.0f,%.0f]. Application average: %.3f ms/frame (%.1f FPS). %s",
+                io.MousePos.x,
+                io.MousePos.y,
+                1000.0f / io.Framerate,
+                io.Framerate,
+                m_task_view ? m_task_view->debug_info().c_str() : ""
+            );
+        }
+
+        // BeginViewportSideBar calls Begin() so need to call End regardless of return val
+        ImGui::End();
+    }
+
+    void annotations_save_copy()
+    {
+        static const std::array<nfdfilteritem_t, 1> save_filters = {{
+            {"JSON", "json"},
+        }};
+
+        spdlog::info("Selecting annotations file save copy path...");
+        NFD::UniquePath save_path;
+        nfdresult_t res = NFD::SaveDialog(
+            save_path,
+            save_filters.data(),
+            static_cast<nfdfiltersize_t>(save_filters.size()),
+            nullptr,
+            "annotations.json"
+        );
+        if (res == NFD_OKAY) {
+            if (save_path) {
+                try {
+                    m_annotation_store.sync_to_file(std::filesystem::path(save_path.get()));
+                } catch (const std::exception& error) {
+                    std::string msg = fmt::format("Error saving annotations: {}", error.what());
+                    spdlog::critical(msg);
+                    m_critical_error = msg;
+                }
+            } else {
+                spdlog::error("NFD::SaveDialog returned okay, but path string is null");
+            }
+        } else if (res == NFD_CANCEL) {
+            spdlog::info("Annotations file save copy cancelled");
+        } else {
+            spdlog::error("Error picking annotations save path: {}", NFD::GetError());
+        }
+    }
+
+    void annotations_path_open()
+    {
+        if (m_open_annotations_path_future.valid()) {
+            if (m_open_annotations_path_future.wait_for(std::chrono::seconds(0))
+                == std::future_status::ready)
+            {
+                m_open_annotations_path_future.get();
+            }
+        }
+        bool can_open = !m_open_annotations_path_future.valid();
+        ImGui::BeginDisabled(!can_open);
+        if (ImGui::MenuItem("Open annotations file in explorer...") && can_open) {
+            m_open_annotations_path_future =
+                os::open_path_in_file_explorer(m_annotation_store.path());
+        }
+        ImGui::EndDisabled();
+    }
+
+    void draw_menu_bar()
+    {
+        if (ImGui::BeginMenu("File")) {
+            ImGui::BeginDisabled(!m_nfd_available);
+            if (ImGui::MenuItem("Save a copy of annotations file...") && m_nfd_available) {
+                annotations_save_copy();
+            }
+            ImGui::EndDisabled();
+            annotations_path_open();
+
+            ImGui::Separator();
+            if (ImGui::MenuItem("Quit", "Alt+F4")) {
+                stop();
+            }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Tools")) {
+            for (auto& window : m_menu_item_windows) {
+                window.draw_menu_item();
+            }
+            ImGui::MenuItem("Show debug info", nullptr, &m_show_debug_status_bar);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("View")) {
+            m_color_scheme_selector.draw();
+            ImGui::EndMenu();
+        }
+    }
+
+    void save_annotation(
+        const models::SwallowTaskInfo& task, const models::SwallowAnnotation& annotation
+    )
+    {
+        m_annotation_store.add_annotation(task.get_id(), annotation);
+    }
+
+    std::unique_ptr<TaskView> load_task_view(const models::SwallowTaskInfo& task)
+    {
+        const auto *existing_annotation = m_annotation_store.get_annotation(task.get_id());
+        return ::recap::labeller::gui::load_task_view(
+            m_task_loader,
+            m_data_dir,
+            task,
+            existing_annotation,
+            [this, task](const auto& annotation) { save_annotation(task, annotation); }
+        );
+    }
+
+    void draw_critical_error(const std::string& error)
+    {
+        constexpr ImU32 TitleColor = 0xCC2929FF;
+        widgets::ScopedImColor color_scope(ImGuiCol_TitleBgActive, TitleColor);
+
+        m_critical_error_modal.draw(
+            ERR_ICON ICON_TEXT_SPACE "Critical error##crit_err_modal",
+            ImGuiWindowFlags_AlwaysAutoResize,
+            [&, this]() {
+                ImGui::Text("%s\n(Please email Harry!)", error.c_str());
+                widgets::RedButtonColorScope button_color_scope;
+                if (ImGui::Button(EXIT_ICON ICON_TEXT_SPACE "Quit")) {
+                    stop();
+                }
+
+                // Return true to always keep the window open
+                return true;
+            }
+        );
+    }
+
+    void setup_dockspace() const
+    {
+        constexpr ImGuiDockNodeFlags DockspaceFlags = ImGuiDockNodeFlags_AutoHideTabBar;
+
+        // Initial widths for sidebars from which we calculate dock node ratios - these are just
+        // approximate sizes since the ratio calculations don't factor in window spacing etc.
+        constexpr float TasklistPx = 250;
+        constexpr float LabelInfoPx = 350;
+        constexpr float MinRatio = 0.1F;
+        constexpr float MaxRatio = 0.25F;
+
+        // If the dockspace ID already exists, the the node sizes are already set in imgui.ini. The
+        // following is adapted from:
+        // https://gist.github.com/AidanSun05/953f1048ffe5699800d2c92b88c36d9f
+        ImGuiID id = ImGui::GetID("##dockspace");
+        const ImGuiViewport *const viewport = ImGui::GetMainViewport();
+        if (m_first_draw) [[unlikely]] {
+            const bool configure = ImGui::DockBuilderGetNode(id) == nullptr;
+            ImGui::DockSpaceOverViewport(id, viewport, DockspaceFlags);
+            if (configure) {
+                spdlog::debug("Setting up dockspace");
+                ImGui::DockBuilderRemoveNode(id);
+                ImGui::DockBuilderAddNode(id);
+
+                ImGuiID task_list_id;
+                ImGuiID task_view_data_plots_id;
+                ImGuiID task_view_label_controls_id;
+                const float viewport_width = viewport->Size.x;
+                ImGui::DockBuilderSplitNode(
+                    id,
+                    ImGuiDir_Left,
+                    std::clamp(TasklistPx / viewport_width, MinRatio, MaxRatio),
+                    &task_list_id,
+                    &task_view_data_plots_id
+                );
+                ImGui::DockBuilderSplitNode(
+                    task_view_data_plots_id,
+                    ImGuiDir_Right,
+                    std::clamp(LabelInfoPx / (viewport_width - TasklistPx), MinRatio, MaxRatio),
+                    &task_view_label_controls_id,
+                    &task_view_data_plots_id
+                );
+
+                ImGui::DockBuilderDockWindow(TaskListWindowId, task_list_id);
+                ImGui::DockBuilderDockWindow(TaskViewDataPlotsWindowId, task_view_data_plots_id);
+                ImGui::DockBuilderDockWindow(
+                    TaskViewLabelControlsWindowId, task_view_label_controls_id
+                );
+                ImGui::DockBuilderFinish(id);
+            } else {
+                spdlog::debug("Not setting up dockspace since sizes already set in imgui.ini");
+            }
+        } else {
+            ImGui::DockSpaceOverViewport(id, viewport, DockspaceFlags);
+        }
+    }
+
+    void set_active_task(std::size_t idx)
+    {
+        m_active_task_idx = idx;
+        m_task_view = load_task_view(m_tasks[idx]);
+    }
+
+public:
+    Impl(
+        const std::vector<models::SwallowTaskInfo>& tasks,
+        SwallowAnnotationStore& annotation_store,
+        const std::filesystem::path& data_dir
+    ) :
+        m_tasks(tasks),
+        m_data_dir(data_dir),
+        m_annotation_store(annotation_store),
+        m_annotation_store_error_obs(
+            m_annotation_store.subscribe_sync_error([this](const auto& msg) {
+                spdlog::critical("Error saving annotation: {}", msg);
+                m_critical_error = msg;
+            })
+        )
+    {
+#define LOG_CONFIG(item) spdlog::debug("Gui: " #item " = {}", (item))
+
+        LOG_CONFIG(ConfigDebugBeginReturnValueOnce);
+        LOG_CONFIG(DefaultShowDebugInfo);
+
+        if (NFD::Init() != NFD_OKAY) {
+            spdlog::error("Error initialising NFD: {}", NFD::GetError());
+        } else {
+            m_nfd_available = true;
+            spdlog::debug("NFD initialised");
+        }
+
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        ImPlot::CreateContext();
+
+        ImGuiIO& io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
+        io.ConfigDebugBeginReturnValueOnce = ConfigDebugBeginReturnValueOnce;
+        setup_imgui_ini();
+        setup_fonts();
+
+        set_active_task(0);
+    }
+
+    ~Impl()
+    {
+        if (m_nfd_available) {
+            NFD::Quit();
+        }
+
+        ImPlot::DestroyContext();
+        ImGui::DestroyContext();
+    }
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+    Impl(Impl&&) = delete;
+    Impl& operator=(Impl&&) = delete;
+
+    void draw()
+    {
+        if (ImGui::BeginMainMenuBar()) {
+            draw_menu_bar();
+            ImGui::EndMainMenuBar();
+        }
+
+        if (m_show_debug_status_bar) {
+            draw_status_bar();
+        }
+
+        setup_dockspace();
+
+        if (m_critical_error.has_value()) {
+            draw_critical_error(*m_critical_error);
+        }
+        m_unsaved_task_handler.draw();
+
+        std::size_t new_task_idx = m_task_list.draw(
+            m_tasks, m_active_task_idx, m_annotation_store, m_task_loader, m_data_dir
+        );
+        if (new_task_idx != m_active_task_idx) {
+            if (m_task_view && m_task_view->has_unsaved_changes()) {
+                spdlog::warn("Task {} has unsaved changes", m_active_task_idx);
+                m_unsaved_task_handler.set(
+                    [this, old_idx = m_active_task_idx, new_idx = new_task_idx]() {
+                        spdlog::info("Switching task {} -> {}", old_idx, new_idx);
+                        set_active_task(new_idx);
+                    },
+                    [old_idx = m_active_task_idx, new_idx = new_task_idx]() {
+                        spdlog::info("Cancelling task switch ({} -/-> {})", old_idx, new_idx);
+                    },
+                    m_task_view.get()
+                );
+            } else {
+                set_active_task(new_task_idx);
+            }
+        }
+
+        if (m_task_view) {
+            widgets::ScopedImID id_scope("##current_task_view");
+            m_task_view->draw();
+        }
+
+        for (auto& window : m_menu_item_windows) {
+            window.draw_window();
+        }
+
+        m_first_draw = false;
+    }
+
+    void stop()
+    {
+        if (m_task_view && m_task_view->has_unsaved_changes()) {
+            m_unsaved_task_handler.set(
+                [this]() {
+                    spdlog::info("Discarding unsaved changes and exiting");
+                    m_ready_to_stop = true;
+                },
+                []() { spdlog::info("Cancelling exit due to unsaved changes"); },
+                m_task_view.get()
+            );
+        } else {
+            m_ready_to_stop = true;
+        }
+    }
+
+    bool ready_to_stop() const { return m_ready_to_stop; }
+};
+
+Gui::Gui(
+    const std::vector<models::SwallowTaskInfo>& tasks,
+    SwallowAnnotationStore& annotation_store,
+    const std::filesystem::path& data_dir
+) :
+    m_pimpl(std::make_unique<Impl>(tasks, annotation_store, data_dir))
+{}
+
+Gui::~Gui() = default;
+
+void Gui::draw()
+{
+    m_pimpl->draw();
+}
+
+void Gui::stop()
+{
+    m_pimpl->stop();
+}
+
+void Gui::set_scaling_factor(float scaling_factor)
+{
+    ImGui::GetStyle().ScaleAllSizes(scaling_factor);
+}
+
+bool Gui::ready_to_stop() const
+{
+    return m_pimpl->ready_to_stop();
+}
+}; // namespace recap::labeller::gui

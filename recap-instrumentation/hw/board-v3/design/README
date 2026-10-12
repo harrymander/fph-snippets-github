@@ -1,0 +1,28 @@
+Files for various electronic design tools that were used to design this board.
+
+opa310-preamp-sallenkey.tsc
+
+  TINA-TI (https://www.ti.com/tool/TINA-TI) SPICE circuit simulation for
+  microphone pre-amp with Sallen-Key filter.
+
+opa310.sp
+
+  TI OPA310 SPICE subcircuit model (extracted from TINA-TI model provided by TI)
+
+anti-alias-sallenkey.flt
+
+  Microchip FilterLab Sallen-Key filter design.
+  (https://www.microchip.com/en-us/development-tool/filterlabdesignsoftware)
+
+preamp-sallenkey.asc
+
+  LTspice circuit simulation for microphone pre-amp with Sallen-Key filter. Note
+  that a generic op-amp component is used in the simulation, rather than the
+  specific SPICE model for the OPAx310, as is used in the TINA-TI simulation, so
+  it may be less accurate.
+  (https://www.analog.com/en/design-center/design-tools-and-calculators/ltspice-simulator.html)
+
+opa310-preamp-sallenkey.asc
+
+  LTspice circuit simulation as above but using the OPA310 SPICE model
+  (OPA2310.asy).

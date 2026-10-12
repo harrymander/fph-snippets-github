@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=RECAP USB Reader
+Exec=recapctl-gui
+Icon=recapctl-gui
+Type=Application
+Categories=Utility;
+Terminal=false
+StartupWMClass=recapctl-gui v@PROJECT_VERSION@

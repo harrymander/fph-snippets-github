@@ -1,0 +1,13 @@
+add_subdirectory(usb-reader)
+
+add_library(utils STATIC)
+target_compile_features(utils PUBLIC cxx_std_20)
+target_include_directories(utils PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+if(WIN32)
+    target_sources(utils PRIVATE utils/battery-win32.cpp)
+    target_link_libraries(utils PUBLIC Kernel32.lib)
+elseif(LINUX)
+    target_sources(utils PRIVATE utils/battery-linux.cpp)
+else()
+    message(SEND_ERROR "Unsupported platform")
+endif()

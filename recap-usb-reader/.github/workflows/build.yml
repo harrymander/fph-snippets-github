@@ -1,0 +1,144 @@
+name: Build
+on:
+  push:
+    branches: ["**"]
+    tags: ["v**"]
+env:
+  UV_VERSION: "0.11.14"
+jobs:
+  pre-commit:
+    runs-on: ubuntu-24.04
+    env:
+      PRE_COMMIT_HOME: /home/runner/.pre-commit-cache
+      PRE_COMMIT_VERSION: "4.6.0"
+      PYTHON_VERSION: "3.12"
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      - name: Configure pre-commit cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.PRE_COMMIT_HOME }}
+          key: pre-commit-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('**/.pre-commit-config.yaml') }}
+      - name: Run pre-commit hooks
+        run: uvx "pre-commit==${{ env.PRE_COMMIT_VERSION }}" run --all-files --show-diff-on-failure --color=always
+
+  build-windows:
+    needs: [pre-commit]
+    env:
+      BUILD_TYPE: Release
+      INKSCAPE_URL: https://inkscape.org/gallery/item/44622/inkscape-1.3.2_2023-11-25_091e20e-x64.7z
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Install Python build dependencies
+        run: uv sync --group build
+
+      # Install Inkscape
+      - name: Restore Inkscape cache
+        uses: actions/cache/restore@v5
+        id: uncache-inkscape
+        with:
+          path: inkscape
+          key: ${{ env.INKSCAPE_URL }}
+      - name: Install Inkscape
+        if: ${{ steps.uncache-inkscape.outputs.cache-hit != 'true' }}
+        shell: powershell
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest '${{ env.INKSCAPE_URL }}' -OutFile inkscape.7z
+          7z x inkscape.7z
+      - name: Cache Inkscape
+        if: ${{ steps.uncache-inkscape.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: inkscape
+          key: ${{ env.INKSCAPE_URL }}
+
+      - name: Configure for mocked reader
+        run: |
+          cmake \
+            -B build \
+            -G "Visual Studio 17 2022" -A x64 \
+            -DRECAP_USB_READER_MOCK_READER=on \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DRECAP_USB_READER_BUILD_TESTS=on \
+            -DRECAP_USB_READER_ADD_LINT_TARGETS=off \
+            -DRECAP_USB_READER_BUILD_CLI=off \
+            -DRECAP_USB_READER_BUILD_GUI=on \
+            -DINKSCAPE_HINTS_DIR=${GITHUB_WORKSPACE}/inkscape/bin
+      - name: Build mocked reader
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+      - name: Rename mocked reader executable
+        run: mv build/gui/Release/recapctl-gui.exe recapctl-gui-mocked.exe
+      - name: Upload mocked reader artifact
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: recapctl-windows-mocked
+          path: recapctl-gui-mocked.exe
+
+      - name: Run tests
+        env:
+          GTEST_COLOR: "yes"
+        run: ctest --test-dir build --build-config ${{ env.BUILD_TYPE }} --output-on-failure
+
+      - name: Re-configure for non-mocked reader
+        run: cmake -DRECAP_USB_READER_MOCK_READER=off build
+      - name: Build non-mocked reader
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+      - name: Package installer
+        run: cd build && cpack -G NSIS
+      - name: Upload non-mocked reader artifact
+        uses: actions/upload-artifact@v7
+        with:
+          if-no-files-found: error
+          name: recapctl-windows-installer
+          path: build/recap-usb-reader*.exe
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: build-windows
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: "${{ github.ref }}"  # needed since we don't seem to get the tag message otherwise
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: recapctl-windows-installer
+      - name: List downloaded files
+        run: find -type f
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GIT_SHA: ${{ github.sha }}
+        run: .github/create-release.sh

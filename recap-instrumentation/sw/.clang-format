@@ -1,0 +1,84 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+IndentWidth: 4
+UseCRLF: false
+DeriveLineEnding: false
+
+# Prefer to break and indent on multi-line parameter/argument lists, with
+# parameters/arguments on their own line if cannot fit all on one line.
+AlignAfterOpenBracket: BlockIndent
+BinPackArguments: false
+BinPackParameters: false
+
+InsertTrailingCommas: Wrapped
+InsertBraces: true
+
+# Break before braces for functions, on same line for others (e.g. control
+# statements, structs, enums). For control statements, only break before a brace
+# if the condition spans multiple lines.
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterCaseLabel: false
+  AfterClass: false
+  AfterControlStatement: MultiLine
+  AfterEnum: false
+  AfterFunction: true
+  AfterNamespace: false
+  AfterStruct: false
+  AfterUnion: false
+  AfterExternBlock: false
+  BeforeCatch: false
+  BeforeElse: false
+  BeforeLambdaBody: false
+  BeforeWhile: false
+  IndentBraces: false
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+  SplitEmptyNamespace: false
+
+
+# Align pointer asterisk right, with spaces around qualifiers; e.g.:
+#   const char *foo;
+#   const char *const foo;
+SpaceAroundPointerQualifiers: After
+PointerAlignment: Right
+
+SpaceAfterCStyleCast: true
+KeepEmptyLinesAtTheStartOfBlocks: false
+AllowShortEnumsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Inline # implies "Empty"
+AllowShortBlocksOnASingleLine: Empty
+SpaceBeforeAssignmentOperators: true
+SeparateDefinitionBlocks: Always
+AlignOperands: DontAlign # indent with ContinuationIndentWidth
+ContinuationIndentWidth: 4
+BreakBeforeBinaryOperators: NonAssignment
+
+# Group and sort includes, with an empty line between groups.
+# Includes are grouped in this order:
+#   - module header (clang-format default)
+#   - target.h
+#   - other includes that use ""
+#   - other includes that use <> (and not covered by below rules)
+#   - FreeRTOS, fatfs, printf headers
+#   - newlib (stdlib and POSIX) headers
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^[<"]target\.h[>"]$' # target.h
+    Priority: 1
+    CaseSensitive: true
+  - Regex: '^".*' # Other includes that use "
+    Priority: 2
+    CaseSensitive: false
+  - Regex: '^<(atomic|croutine|deprecated_definitions|event_groups|FreeRTOS|list|message_buffer|mpu_prototypes|mpu_wrappers|portable|projdefs|queue|semphr|stack_macros|StackMacros|stream_buffer|task|timers|freertos-port|ff|diskio|ffconf|(printf/.+))\.h>$' # FreeRTOS, fatfs, printf
+    Priority: 4
+    CaseSensitive: true
+  - Regex: '^<(std.+|alloca|ansi|argz|ar|assert|complex|cpio|ctype|devctl|dirent|elf|envlock|envz|errno|fastmath|fcntl|fenv|fnmatch|getopt|glob|grp|iconv|ieeefp|inttypes|langinfo|libgen|limits|locale|malloc|math|memory|ndbm|newlib|newlib_version|paths|pthread|pwd|reent|regdef|regex|sched|search|setjmp|signal|spawn|string|strings|syslist|tar|termios|tgmath|threads|time|unctrl|unistd|utime|utmp|wchar|wctype|wordexp)\.h>$' # stdlib headers
+    Priority: 5
+    CaseSensitive: true
+  - Regex: '^<.*' # Other includes that use <>
+    Priority: 3
+    CaseSensitive: false
+...

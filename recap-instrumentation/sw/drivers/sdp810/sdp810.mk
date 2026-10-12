@@ -1,0 +1,6 @@
+LOCAL_DRIVERS += twi-async
+
+VPATH += $(LOCAL_DRIVERS_DIR)/sdp810
+INCLUDES += -I$(LOCAL_DRIVERS_DIR)/sdp810
+
+SRC += sdp810.c

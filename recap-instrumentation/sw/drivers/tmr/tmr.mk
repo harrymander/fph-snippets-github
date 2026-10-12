@@ -1,0 +1,3 @@
+VPATH += $(LOCAL_DRIVERS_DIR)/tmr
+INCLUDES += -I$(LOCAL_DRIVERS_DIR)/tmr
+SRC += tmr.c

@@ -1,0 +1,3 @@
+#pragma once
+
+#cmakedefine RECAP_USB_READER_GUI_INCLUDE_DEMOS

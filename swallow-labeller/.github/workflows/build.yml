@@ -1,0 +1,117 @@
+name: Build
+on:
+  push:
+    branches: ["*"]
+env:
+  UV_VERSION: "0.11.14"
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    env:
+      PRE_COMMIT_HOME: /home/runner/.pre-commit-cache
+      PRE_COMMIT_VERSION: "4.6.0"
+      PYTHON_VERSION: "3.14"
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      - name: Configure pre-commit cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.PRE_COMMIT_HOME }}
+          key: pre-commit-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('**/.pre-commit-config.yaml') }}
+      - name: Run pre-commit hooks
+        run: uvx "pre-commit==$PRE_COMMIT_VERSION" run --all-files --show-diff-on-failure --color=always
+
+  build-windows:
+    needs: [pre-commit]
+    env:
+      BUILD_TYPE: Release
+      VCPKG_DISABLE_METRICS: 1
+      NUGET_FEED_URL: https://nuget.pkg.github.com/harrymander/index.json
+    runs-on: windows-2025-vs2026
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      packages: write
+      contents: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Install Python dependencies
+        run: uv sync --group test
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: vcpkg/bootstrap-vcpkg.bat
+      - name: Set vcpkg root directory # as it is overridden in MSVC configuration action
+        run: echo 'VCPKG_ROOT=${{ github.workspace }}/vcpkg' >> "$GITHUB_ENV"
+      - name: Configure vcpkg NuGet sources
+        shell: pwsh
+        run: |
+          .$(vcpkg/vcpkg fetch nuget) `
+            sources add `
+            -Source "${{ env.NUGET_FEED_URL }}" `
+            -StorePasswordInClearText `
+            -Name GitHubPackages `
+            -UserName "harrymander" `
+            -Password "${{ secrets.GITHUB_TOKEN }}"
+          .$(vcpkg/vcpkg fetch nuget) `
+            setapikey "${{ secrets.GITHUB_TOKEN }}" `
+            -Source "${{ env.NUGET_FEED_URL }}"
+      - name: Configure vcpkg binary cache directory
+        run: echo 'VCPKG_BINARY_SOURCES=clear;nuget,${{ env.NUGET_FEED_URL }},readwrite' >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: |
+          cmake -G "Visual Studio 18 2026" --preset windows-static \
+            -DBUILD_DEMO=off \
+            -DENABLE_LINTING=off \
+            -DENABLE_TEST_SANITIZERS=off \
+            -DRECAP_LABELLER_LOG_TO_APP_DATA_DIR=on
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+
+      - name: Run tests
+        env:
+          GTEST_COLOR: "yes"
+          ASAN_OPTIONS: "color=always"
+        run: ctest --test-dir build --build-config ${{ env.BUILD_TYPE }} --output-on-failure
+
+      - name: Rename executable for artifact upload
+        run: |
+          version=$(cd build && cmake -N --system-information | grep "^CMAKE_PROJECT_VERSION:STATIC=")
+          version=$(echo "$version" | cut -d= -f2)
+          sha=$(git rev-parse --short HEAD)
+          artifact_basename=recap-labeller-${version}-complete-data-${sha}-win64
+          mv build/${{ env.BUILD_TYPE }}/recap-labeller.exe "${artifact_basename}.exe"
+          echo "ARTIFACT_BASENAME=${artifact_basename}" >> "$GITHUB_ENV"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          if-no-files-found: error
+          name: ${{ env.ARTIFACT_BASENAME }}
+          path: ${{ env.ARTIFACT_BASENAME }}.exe

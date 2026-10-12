@@ -1,0 +1,453 @@
+#include "app/annotation-store.hpp"
+#include "app/config.hpp"
+#include "models/task-info.hpp"
+#include "options.h"
+#include "platform/platform.hpp"
+#include "spdlog/common.h"
+#include "util/os.hpp"
+
+#include <argparse/argparse.hpp>
+#include <fmt/core.h>
+#include <fmt/ranges.h>
+#include <spdlog/fmt/std.h>
+#include <spdlog/logger.h>
+#include <spdlog/sinks/basic_file_sink.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
+#include <spdlog/stopwatch.h>
+
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <unordered_set>
+#include <vector>
+
+namespace {
+
+using namespace recap::labeller;
+
+bool envvar_non_empty(const char *name)
+{
+    auto var = os::getenv(name);
+    return var.has_value() && !var->empty();
+}
+
+void setup_logging_level_from_env()
+{
+    auto envvar = os::getenv("RECAP_LABELLER_LOG_LEVEL");
+    auto level = spdlog::level::debug;
+    if (envvar.has_value()) {
+        const auto& level_str = *envvar;
+        if (level_str == "trace") {
+            level = spdlog::level::trace;
+        } else if (level_str == "debug") {
+            level = spdlog::level::debug;
+        } else if (level_str == "info") {
+            level = spdlog::level::info;
+        } else if (level_str == "warn") {
+            level = spdlog::level::warn;
+        } else if (level_str == "err") {
+            level = spdlog::level::err;
+        } else if (level_str == "critical") {
+            level = spdlog::level::critical;
+        } else if (level_str == "off") {
+            level = spdlog::level::off;
+        } else {
+            level = spdlog::level::debug;
+            spdlog::error("Unknown log level {:?}: defaulting to debug", level_str);
+        }
+    }
+
+    spdlog::set_level(level);
+}
+
+void setup_console_logging()
+{
+    auto color_sink = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
+
+    // See https://force-color.org/ and https://no-color.org/ for an informal standard
+    // Variable just needs to be non-empty to be considered enabled
+    if (envvar_non_empty("NO_COLOR")) {
+        color_sink->set_color_mode(spdlog::color_mode::never);
+    }
+    if (envvar_non_empty("FORCE_COLOR")) {
+        color_sink->set_color_mode(spdlog::color_mode::always);
+    }
+
+    spdlog::default_logger()->sinks() = {color_sink};
+
+    setup_logging_level_from_env();
+}
+
+void setup_file_logging(const std::filesystem::path& path)
+{
+    spdlog::debug("Logging to {}", path);
+    auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(path.string());
+    spdlog::default_logger()->sinks().push_back(sink);
+
+    // Create a separate temporary logger to write start message just to file:
+    spdlog::set_automatic_registration(false);
+    spdlog::logger("", {sink})
+        .info("*************************** NEW LOG START ***************************");
+    spdlog::set_automatic_registration(true);
+}
+
+[[noreturn]] void throw_invalid_path(const std::string& path, const std::string& reason)
+{
+    throw std::invalid_argument(fmt::format("Invalid path '{}': {}", path, reason));
+}
+
+std::string check_is_dir(const std::string& path_str)
+{
+    std::filesystem::path path(path_str);
+    if (!std::filesystem::exists(path)) {
+        throw_invalid_path(path_str, "does not exist");
+    }
+    if (!std::filesystem::is_directory(path)) {
+        throw_invalid_path(path_str, "not a directory");
+    }
+
+    return path_str;
+}
+
+void validate_regular_file_path(const std::filesystem::path& path)
+{
+    if (!std::filesystem::exists(path)) {
+        throw_invalid_path(path.string(), "does not exist");
+    }
+
+    // We won't check for all path types, just check for common ones to give better error messages
+    if (std::filesystem::is_directory(path)) {
+        throw_invalid_path(path.string(), "is a directory");
+    }
+    if (!std::filesystem::is_regular_file(path)) {
+        throw_invalid_path(path.string(), "not a regular file");
+    }
+}
+
+std::string check_path_writable(const std::string& path_str)
+{
+    // Doesn't really check if path is writable, just checks that is not a directory and parent
+    // directory exists.
+
+    std::filesystem::path path(path_str);
+    if (std::filesystem::is_directory(path)) {
+        throw_invalid_path(path_str, "is a directory");
+    }
+
+    if (path.has_parent_path()) {
+        auto parent = path.parent_path();
+        if (!std::filesystem::exists(parent)) {
+            throw_invalid_path(path_str, "parent path does not exist");
+        }
+        if (!std::filesystem::is_directory(parent)) {
+            throw_invalid_path(path_str, "parent path is not a directory");
+        }
+    }
+
+    return path_str;
+}
+
+bool create_directories_if_not_exist(const std::filesystem::path& dir)
+{
+    if (std::filesystem::exists(dir)) {
+        if (std::filesystem::is_directory(dir)) {
+            spdlog::debug("Directory {} already exists", dir);
+            return true;
+        }
+
+        spdlog::error("Path {} exists but is not a directory", dir);
+        return false;
+    }
+
+    std::error_code ec;
+    const bool created = std::filesystem::create_directories(dir, ec);
+    if (ec) {
+        spdlog::error("Error creating directory {}: {}", dir, ec.message());
+        return false;
+    }
+
+    if (!created) {
+        spdlog::error("Directory {} not created!", dir);
+        return false;
+    }
+
+    spdlog::debug("Created directory {}", dir);
+    return true;
+}
+
+std::optional<std::filesystem::path> get_app_data_dir()
+{
+    auto dir = os::get_user_data_dir();
+    if (dir) {
+        dir->append(PROJECT_NAME);
+        spdlog::debug("App data dir: {}", *dir);
+        return dir;
+    }
+    return std::nullopt;
+}
+
+struct ProgramOptions {
+    static std::optional<ProgramOptions> from_cli_arguments(
+        const char *program_name, const char *program_version, int argc, const char **argv
+    )
+    {
+        constexpr const char *LogCliHelp =
+#ifdef RECAP_LABELLER_LOG_TO_APP_DATA_DIR
+            "file to log to; if not provided logs to user app data dir";
+#else
+            "file to log to";
+#endif
+
+        auto regular_file_action = [](const std::string& val) -> std::string {
+            validate_regular_file_path(std::filesystem::path(val));
+            return val;
+        };
+
+        argparse::ArgumentParser parser(program_name, program_version);
+        parser.add_argument("--log").help(LogCliHelp).action(check_path_writable);
+        parser.add_argument("--config", "-c")
+            .help(
+                "path to config file; pass empty string to use default settings, ignoring\n"
+                "the config file that may be located in the user app data dir."
+            );
+        parser.add_argument("--tasks", "-t")
+            .help("path to labelling tasks JSON")
+            .action(regular_file_action);
+        parser.add_argument("--data-dir", "-d")
+            .help("directory containing data files")
+            .action(check_is_dir);
+        parser.add_argument("--annotations", "-a")
+            .help(
+                "path to write annotations to; if exists, "
+                "reads existing annotations from this file"
+            )
+            .action(check_path_writable);
+        parser.add_argument("--no-app-data-dir")
+            .implicit_value(true)
+            .default_value(false)
+            .help(
+                "by default, if any of --config, --data-dir, --tasks, --annotations are not\n"
+                "provided, they will be set relative to the user app data dir. If this is\n"
+                "passed, then all paths must be explicitly provided."
+            );
+
+        auto print_usage_error = [&](const std::exception& exc) {
+            std::cerr << "Error: " << exc.what() << '\n';
+            std::cerr << parser;
+        };
+
+        try {
+            parser.parse_args(argc, argv);
+        } catch (const std::exception& error) {
+            print_usage_error(error);
+            return std::nullopt;
+        }
+
+        std::optional<std::filesystem::path> app_data_dir = std::nullopt;
+        if (!parser.is_used("--no-app-data-dir")) {
+            app_data_dir = get_app_data_dir();
+            if (app_data_dir && !create_directories_if_not_exist(*app_data_dir)) {
+                app_data_dir.reset();
+            }
+        }
+
+        auto get_data_path = [&](const char *argname,
+                                 const char *default_filename) -> std::filesystem::path {
+            auto path_str = parser.present(argname);
+            if (path_str) {
+                return {*path_str};
+            }
+
+            if (!app_data_dir) {
+                throw std::invalid_argument(fmt::format("{} required", argname));
+            }
+
+            return *app_data_dir / std::filesystem::path(default_filename);
+        };
+
+        auto get_config_file_path = [&]() -> std::optional<std::filesystem::path> {
+            // Config file: if not provided, use config.json in app data dir if exists, else if
+            // empty act as if no config file is present
+            auto config_opt = parser.present("--config");
+            if (config_opt.has_value()) {
+                if (!config_opt->empty()) {
+                    auto config_file = std::filesystem::path(*config_opt);
+                    validate_regular_file_path(config_file);
+                    return config_file;
+                }
+            } else if (app_data_dir) {
+                auto default_path = *app_data_dir / "config.json";
+                if (std::filesystem::is_regular_file(default_path)) {
+                    return default_path;
+                }
+            }
+
+            return std::nullopt;
+        };
+
+#ifdef RECAP_LABELLER_LOG_TO_APP_DATA_DIR
+        auto log_file = get_data_path("--log", "logs.txt").string();
+#else
+        auto log_file = parser.present("--log");
+#endif // RECAP_LABELLER_LOG_TO_APP_DATA_DIR
+
+        try {
+            return ProgramOptions{
+                .log_file = log_file,
+                .data_dir = get_data_path("--data-dir", "swallow-data"),
+                .tasks_file = get_data_path("--tasks", "tasks.json"),
+                .annotations_file =
+                    get_data_path("--annotations", "annotations.json").make_preferred(),
+                .config_file = get_config_file_path(),
+            };
+        } catch (const std::invalid_argument& error) {
+            print_usage_error(error);
+            return std::nullopt;
+        }
+    }
+
+    std::optional<std::string> log_file;
+    std::filesystem::path data_dir;
+    std::filesystem::path tasks_file;
+    std::filesystem::path annotations_file;
+    std::optional<std::filesystem::path> config_file;
+};
+
+// TODO: this whole structure is a mess, need to encapsulate task management in a class...
+bool all_task_ids_unique(const std::vector<models::SwallowTaskInfo>& tasks)
+{
+    std::unordered_set<std::string> ids;
+    for (const auto& task : tasks) {
+        const auto& id = task.get_id();
+        if (ids.contains(id)) {
+            spdlog::error("Duplicate task ID: {}", id);
+            return false;
+        }
+        ids.insert(id);
+    }
+    return true;
+}
+
+std::optional<std::vector<models::SwallowTaskInfo>>
+load_labelling_tasks(const std::filesystem::path& tasks_path)
+{
+    std::ifstream stream(tasks_path);
+    if (!stream) {
+        spdlog::critical("Could not open labelling tasks file {}", tasks_path);
+        return std::nullopt;
+    }
+
+    try {
+        auto tasks = models::load_swallow_task_info_json(stream);
+        if (tasks.empty()) {
+            spdlog::critical("Labelling tasks list is empty!");
+            return std::nullopt;
+        }
+        if (!all_task_ids_unique(tasks)) {
+            spdlog::critical("Got duplicate task IDs");
+            return std::nullopt;
+        }
+        spdlog::debug("Loaded {} task info(s)", tasks.size());
+        return tasks;
+    } catch (const std::invalid_argument& e) {
+        spdlog::critical("Invalid labelling tasks file: {}", e.what());
+    } catch (const std::runtime_error& e) {
+        spdlog::critical("Error reading from file: {}", e.what());
+    }
+
+    return std::nullopt;
+}
+
+std::optional<SwallowAnnotationStore> make_annotations_store(const std::filesystem::path& path)
+{
+    std::unique_ptr<std::istream> stream;
+    if (std::filesystem::exists(path)) {
+        spdlog::info("Reading existing annotations from {}", path);
+        stream = std::make_unique<std::ifstream>(path);
+    } else {
+        spdlog::info("No existing annotations, creating annotations file at {}", path);
+    }
+
+    if (stream && stream->fail()) {
+        spdlog::critical("Error opening annotations file");
+        return std::nullopt;
+    }
+
+    try {
+        return SwallowAnnotationStore(path, stream.get());
+    } catch (const std::runtime_error& e) {
+        spdlog::critical("Error parsing annotations file: {}", e.what());
+    }
+    return std::nullopt;
+}
+
+int run_main(int argc, const char *argv[])
+{
+    setup_console_logging();
+    auto parse_options =
+        ProgramOptions::from_cli_arguments(PROJECT_NAME, PROJECT_VERSION, argc, argv);
+    if (!parse_options) {
+        return 2;
+    }
+    const auto& options = *parse_options;
+    if (options.log_file) {
+        setup_file_logging(*options.log_file);
+    }
+    spdlog::debug("Command line arguments:\n  {}", fmt::join(argv, argv + argc, "\n  "));
+
+    if (options.config_file) {
+        spdlog::info("Loading config from {}", *options.config_file);
+    } else {
+        spdlog::info("No config file, using default settings.");
+    }
+    try {
+        app::load_config(options.config_file ? &(*options.config_file) : nullptr);
+    } catch (const std::invalid_argument& err) {
+        spdlog::critical("Invalid config: {}", err.what());
+        return 1;
+    }
+    app::log_config(app::get_global_app_config(), spdlog::level::info);
+
+    auto labelling_tasks = load_labelling_tasks(options.tasks_file);
+    if (!labelling_tasks.has_value()) {
+        return 1;
+    }
+    auto annotations_store = make_annotations_store(options.annotations_file);
+    if (!annotations_store.has_value()) {
+        return 1;
+    }
+    try {
+        // Sync to file to check that writing works
+        annotations_store->sync_to_file();
+    } catch (const std::runtime_error& e) {
+        spdlog::critical("Error writing to annotations file: {}", e.what());
+        return 1;
+    }
+
+    return platform::run(
+        *labelling_tasks, *annotations_store, std::filesystem::path(options.data_dir)
+    );
+}
+
+}; // namespace
+
+int main(int argc, const char *argv[])
+{
+#if NDEBUG
+    try {
+        return run_main(argc, argv);
+    } catch (const std::exception& error) {
+        std::cerr << "Error: " << error.what() << '\n';
+        return 1;
+    } catch (...) {
+        std::cerr << "An unknown error occurred!\n";
+        return 1;
+    }
+#else
+    return run_main(argc, argv);
+#endif
+}

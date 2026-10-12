@@ -1,0 +1,6 @@
+#ifndef RECAP_INSTRUMENT_CONTROL_H
+#define RECAP_INSTRUMENT_CONTROL_H
+
+void control_init(void);
+
+#endif // RECAP_INSTRUMENT_CONTROL_H

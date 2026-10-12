@@ -1,0 +1,7 @@
+[project]
+name = "sw"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "clang-format>=20.1.3",
+]

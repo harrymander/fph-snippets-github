@@ -1,0 +1,282 @@
+[
+  {
+    "subject": 1,
+    "test_type": "cued",
+    "repeatnum": 3,
+    "recording_file": "ce9d3e3c7cc3441f18f45d53d38943b4",
+    "npz_file": {
+      "path": "01-cued-r3.npz",
+      "checksum": "2c7ef3865361c4038de98486a98d92bf"
+    },
+    "event_times": [
+      {
+        "start": 101.10256791590423,
+        "end": 103.04115595207396
+      },
+      {
+        "start": 214.6838648086468,
+        "end": 216.37995700988304
+      },
+      {
+        "start": 316.274210018825,
+        "end": 318.87619391538294
+      },
+      {
+        "start": 417.89853311399463,
+        "end": 419.4597226683209
+      },
+      {
+        "start": 518.6710816191419,
+        "end": 520.2585443171107
+      }
+    ]
+  },
+  {
+    "subject": 2,
+    "test_type": "cued",
+    "repeatnum": 1,
+    "recording_file": "c8dc501b49a142bd21c4650c488d4b39",
+    "npz_file": {
+      "path": "02-cued-r1.npz",
+      "checksum": "875e6d292f8acf9e31f6647ca1e6590e"
+    },
+    "event_times": [
+      {
+        "start": 104.2122600375158,
+        "end": 106.31285811889255
+      },
+      {
+        "start": 195.20317206805115,
+        "end": 197.0434407035892
+      },
+      {
+        "start": 295.5635052607267,
+        "end": 298.0615184171133
+      },
+      {
+        "start": 381.0453594569458,
+        "end": 383.0305453416744
+      },
+      {
+        "start": 482.43273520109244,
+        "end": 484.7414895457986
+      }
+    ]
+  },
+  {
+    "subject": 3,
+    "test_type": "cued",
+    "repeatnum": 3,
+    "recording_file": "fb4f42016f2769d769581a0ba4d2d49f",
+    "npz_file": {
+      "path": "03-cued-r3.npz",
+      "checksum": "377f046f81c707a8f0c06d4633d1bbb3"
+    },
+    "event_times": [
+      {
+        "start": 121.42541789827361,
+        "end": 123.59345993266751
+      },
+      {
+        "start": 247.17576824496786,
+        "end": 249.2231981919129
+      },
+      {
+        "start": 373.87826207985165,
+        "end": 375.8989255916103
+      },
+      {
+        "start": 502.14523511769755,
+        "end": 504.7412537427617
+      }
+    ]
+  },
+  {
+    "subject": 4,
+    "test_type": "tidal",
+    "repeatnum": 3,
+    "recording_file": "d9d5bc209faea8ebeae301e52ef47cd6",
+    "npz_file": {
+      "path": "04-tidal-r3.npz",
+      "checksum": "a8b76d2f055f4cc3d43867659b87b18f"
+    },
+    "event_times": [
+      {
+        "start": 203.73452474016386,
+        "end": 206.26122809628387
+      },
+      {
+        "start": 389.9773283534625,
+        "end": 391.86201473051756
+      }
+    ]
+  },
+  {
+    "subject": 5,
+    "test_type": "tidal",
+    "repeatnum": 2,
+    "recording_file": "0836150358aa3d9e12430bafb745ad3d",
+    "npz_file": {
+      "path": "05-tidal-r2.npz",
+      "checksum": "6d9d95cacc622eae36fa43f61151f752"
+    },
+    "event_times": [
+      {
+        "start": 126.27442609318632,
+        "end": 128.3177107654222
+      },
+      {
+        "start": 233.94480964880384,
+        "end": 235.89775394202516
+      },
+      {
+        "start": 359.9676004430019,
+        "end": 362.2818402008437
+      },
+      {
+        "start": 480.5929627067148,
+        "end": 483.0165011404626
+      }
+    ]
+  },
+  {
+    "subject": 6,
+    "test_type": "cued",
+    "repeatnum": 3,
+    "recording_file": "827aa21a5391ea9949e09ccf15bda04f",
+    "npz_file": {
+      "path": "06-cued-r3.npz",
+      "checksum": "1464e5e73ed544bcc91a0d9b4bc75a8f"
+    },
+    "event_times": [
+      {
+        "start": 99.88577443571954,
+        "end": 102.60202358608215
+      },
+      {
+        "start": 198.31103127811056,
+        "end": 200.47068997468855
+      },
+      {
+        "start": 300.68512594942825,
+        "end": 302.25440907185293
+      },
+      {
+        "start": 419.4532828793849,
+        "end": 420.8976876921527
+      },
+      {
+        "start": 505.81234020279584,
+        "end": 507.83199164274
+      }
+    ]
+  },
+  {
+    "subject": 7,
+    "test_type": "cued",
+    "repeatnum": 3,
+    "recording_file": "37bbb078dcf9d16ada99d518587af557",
+    "npz_file": {
+      "path": "07-cued-r3.npz",
+      "checksum": "a7a53f046a76945748f31f94e56b11c6"
+    },
+    "event_times": [
+      {
+        "start": 204.92068080103817,
+        "end": 207.6320621475107
+      },
+      {
+        "start": 396.76479947491623,
+        "end": 399.18075487287695
+      }
+    ]
+  },
+  {
+    "subject": 8,
+    "test_type": "tidal",
+    "repeatnum": 1,
+    "recording_file": "bf55bf77727dae4416b7ec341cc78124",
+    "npz_file": {
+      "path": "08-tidal-r1.npz",
+      "checksum": "ca573c8c242e4a246080a48cd25dc6b2"
+    },
+    "event_times": [
+      {
+        "start": 118.87152250651195,
+        "end": 121.00368491928161
+      },
+      {
+        "start": 229.94664139516,
+        "end": 232.40792156926238
+      },
+      {
+        "start": 342.88845440934637,
+        "end": 344.8742115098357
+      },
+      {
+        "start": 459.2528620011055,
+        "end": 461.7324568842763
+      }
+    ]
+  },
+  {
+    "subject": 9,
+    "test_type": "cued",
+    "repeatnum": 1,
+    "recording_file": "988555fe9d8ea54f8e7956e37e3712db",
+    "npz_file": {
+      "path": "09-cued-r1.npz",
+      "checksum": "3b30b5f4613f9a9ba825ef52ffac4111"
+    },
+    "event_times": [
+      {
+        "start": 104.39003940171291,
+        "end": 106.66612310332818
+      },
+      {
+        "start": 203.46263958415992,
+        "end": 205.17846058872667
+      },
+      {
+        "start": 303.56209647148,
+        "end": 305.41037836747864
+      },
+      {
+        "start": 412.9657982549923,
+        "end": 415.07201475505207
+      },
+      {
+        "start": 506.7384509189917,
+        "end": 508.35657037396857
+      }
+    ]
+  },
+  {
+    "subject": 10,
+    "test_type": "tidal",
+    "repeatnum": 3,
+    "recording_file": "7b13d88b71f8a5888db7f00e12dfa648",
+    "npz_file": {
+      "path": "10-tidal-r3.npz",
+      "checksum": "0f02b504edaf29963abd7cb313e24da7"
+    },
+    "event_times": [
+      {
+        "start": 122.22442113882262,
+        "end": 124.24299369023944
+      },
+      {
+        "start": 242.83305670638006,
+        "end": 244.1226027133182
+      },
+      {
+        "start": 374.11147983795456,
+        "end": 375.46475271016874
+      },
+      {
+        "start": 495.35796126164655,
+        "end": 497.15086535152875
+      }
+    ]
+  }
+]

@@ -1,0 +1,8 @@
+
+LOCAL_DRIVERS +=
+PERIPHERALS += usart
+
+VPATH += $(LOCAL_DRIVERS_DIR)/h2s
+INCLUDES += -I$(LOCAL_DRIVERS_DIR)/h2s
+
+SRC += h2s.c h2s-reading.c
